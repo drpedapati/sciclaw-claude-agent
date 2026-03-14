@@ -1,6 +1,6 @@
 {
   "name": "sciclaw-claude-agent",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": false,
   "type": "module",
   "description": "Claude Agent SDK bridge for sciClaw Claude OAuth users",
@@ -14,6 +14,6 @@
     "smoke:ok": "node ./bin/sciclaw-claude-agent.js"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.2.75"
+    "@anthropic-ai/claude-agent-sdk": "0.2.76"
   }
 }
