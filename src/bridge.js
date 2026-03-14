@@ -74,6 +74,15 @@ export function normalizeThinking(thinking) {
   return { type: "disabled" };
 }
 
+export function extractSystemMessages(messages = []) {
+  if (!Array.isArray(messages)) {
+    return [];
+  }
+  return messages
+    .filter((message) => message && message.role === "system" && typeof message.content === "string" && message.content.trim())
+    .map((message) => message.content.trim());
+}
+
 export function buildToolSection(tools = []) {
   if (!Array.isArray(tools) || tools.length === 0) {
     return [
@@ -132,7 +141,7 @@ function serializeToolCall(call) {
 
 export function normalizeMessages(messages = []) {
   return messages
-    .filter((message) => message && typeof message.role === "string")
+    .filter((message) => message && typeof message.role === "string" && message.role !== "system")
     .map((message) => {
       const out = {
         role: message.role,
@@ -153,10 +162,8 @@ export function normalizeMessages(messages = []) {
     });
 }
 
-export function buildPrompt(messages = [], tools = []) {
-  const toolSection = buildToolSection(tools);
-  const normalizedMessages = normalizeMessages(messages);
-  return [
+export function buildSystemPrompt(messages = [], tools = []) {
+  const lines = [
     "You are the sciClaw Claude bridge.",
     "Read the conversation transcript and fill the structured output schema attached to this request.",
     "Rules:",
@@ -168,8 +175,24 @@ export function buildPrompt(messages = [], tools = []) {
     "- Never wrap JSON in markdown fences.",
     "- If the transcript contains role=tool messages, those are authoritative tool results. Use them directly.",
     "",
-    toolSection,
-    "",
+  ];
+
+  const callerSystem = extractSystemMessages(messages);
+  if (callerSystem.length > 0) {
+    lines.push("Caller system instructions:");
+    for (const message of callerSystem) {
+      lines.push(message);
+    }
+    lines.push("");
+  }
+
+  lines.push(buildToolSection(tools));
+  return lines.join("\n");
+}
+
+export function buildPrompt(messages = []) {
+  const normalizedMessages = normalizeMessages(messages);
+  return [
     "Conversation transcript as JSON:",
     JSON.stringify(normalizedMessages, null, 2),
   ].join("\n");
@@ -283,6 +306,7 @@ function buildOptions(request = {}) {
     maxTurns: Math.max(Number(request.max_turns ?? DEFAULT_MAX_TURNS), 2),
     outputFormat: createOutputFormat(),
     persistSession: request.persist_session === true,
+    systemPrompt: buildSystemPrompt(request.messages, request.tools ?? []),
     settings: {
       forceLoginMethod: "claudeai",
     },
