@@ -5,7 +5,9 @@ import {
   DEFAULT_CONFIG_DIR,
   buildPrompt,
   buildSystemPrompt,
+  extractAssistantFallback,
   extractSystemMessages,
+  hasMeaningfulStructuredOutput,
   normalizeClaudeModel,
   normalizeStructuredOutput,
   normalizeWorkspace,
@@ -95,6 +97,36 @@ test("normalizeStructuredOutput parses tool arguments JSON", () => {
 
   assert.equal(out.tool_calls[0].name, "lookup");
   assert.deepEqual(out.tool_calls[0].arguments, { query: "abc" });
+});
+
+test("extractAssistantFallback reads assistant text and StructuredOutput tool payload", () => {
+  const fallback = extractAssistantFallback({
+    type: "assistant",
+    message: {
+      content: [
+        { type: "text", text: "First line." },
+        {
+          type: "tool_use",
+          name: "StructuredOutput",
+          input: {
+            content: "",
+            tool_calls: [
+              {
+                id: "call_1",
+                type: "function",
+                function: { name: "lookup", arguments: "{\"query\":\"abc\"}" },
+              },
+            ],
+          },
+        },
+        { type: "text", text: "Second line." },
+      ],
+    },
+  });
+
+  assert.equal(fallback.content, "First line.\n\nSecond line.");
+  assert.equal(hasMeaningfulStructuredOutput(fallback.structured_output), true);
+  assert.equal(fallback.structured_output.tool_calls[0].name, "lookup");
 });
 
 test("runBridge injects Claude Code oauth token env and returns structured output", async () => {
@@ -216,4 +248,100 @@ test("runBridge preserves result when SDK emits error result then throws", async
 
   assert.equal(response.is_error, true);
   assert.match(response.error, /Failed to authenticate/);
+});
+
+test("runBridge falls back to last assistant text when final result is empty", async () => {
+  const response = await runBridge(
+    {
+      oauth_token: "sk-ant-oat-test",
+      messages: [{ role: "user", content: "Hello" }],
+      tools: [],
+    },
+    {
+      query() {
+        return (async function* () {
+          yield {
+            type: "assistant",
+            message: {
+              content: [{ type: "text", text: "Recovered assistant text" }],
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: "",
+            structured_output: { content: "", tool_calls: [] },
+            session_id: "sess_fallback_text",
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          };
+        })();
+      },
+    },
+  );
+
+  assert.equal(response.is_error, false);
+  assert.equal(response.content, "Recovered assistant text");
+  assert.deepEqual(response.tool_calls, []);
+});
+
+test("runBridge falls back to last StructuredOutput tool payload when final result is empty", async () => {
+  const response = await runBridge(
+    {
+      oauth_token: "sk-ant-oat-test",
+      messages: [{ role: "user", content: "Hello" }],
+      tools: [],
+    },
+    {
+      query() {
+        return (async function* () {
+          yield {
+            type: "assistant",
+            message: {
+              content: [
+                {
+                  type: "tool_use",
+                  name: "StructuredOutput",
+                  input: {
+                    content: "",
+                    tool_calls: [
+                      {
+                        id: "call_1",
+                        type: "function",
+                        function: { name: "lookup", arguments: "{\"query\":\"abc\"}" },
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          };
+          yield {
+            type: "result",
+            subtype: "success",
+            is_error: false,
+            result: "",
+            structured_output: { content: "", tool_calls: [] },
+            session_id: "sess_fallback_tool",
+            usage: {
+              input_tokens: 10,
+              output_tokens: 5,
+              cache_creation_input_tokens: 0,
+              cache_read_input_tokens: 0,
+            },
+          };
+        })();
+      },
+    },
+  );
+
+  assert.equal(response.is_error, false);
+  assert.equal(response.content, "");
+  assert.equal(response.tool_calls.length, 1);
+  assert.equal(response.tool_calls[0].name, "lookup");
 });

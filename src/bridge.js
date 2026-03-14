@@ -270,6 +270,55 @@ export function normalizeStructuredOutput(structuredOutput) {
   };
 }
 
+function normalizeContentText(parts = []) {
+  if (!Array.isArray(parts)) {
+    return "";
+  }
+  return parts
+    .filter((part) => part && part.type === "text" && typeof part.text === "string" && part.text.trim())
+    .map((part) => part.text.trim())
+    .join("\n\n");
+}
+
+function extractStructuredOutputTool(parts = []) {
+  if (!Array.isArray(parts)) {
+    return null;
+  }
+  for (const part of parts) {
+    if (
+      part &&
+      part.type === "tool_use" &&
+      part.name === "StructuredOutput" &&
+      part.input &&
+      typeof part.input === "object"
+    ) {
+      return normalizeStructuredOutput(part.input);
+    }
+  }
+  return null;
+}
+
+export function hasMeaningfulStructuredOutput(structuredOutput) {
+  if (!structuredOutput || typeof structuredOutput !== "object") {
+    return false;
+  }
+  if (typeof structuredOutput.content === "string" && structuredOutput.content.trim()) {
+    return true;
+  }
+  return Array.isArray(structuredOutput.tool_calls) && structuredOutput.tool_calls.length > 0;
+}
+
+export function extractAssistantFallback(message) {
+  if (!message || message.type !== "assistant" || !message.message) {
+    return { content: "", structured_output: null };
+  }
+  const parts = Array.isArray(message.message.content) ? message.message.content : [];
+  return {
+    content: normalizeContentText(parts),
+    structured_output: extractStructuredOutputTool(parts),
+  };
+}
+
 export function usageFromResult(result) {
   const usage = result?.usage ?? {};
   return {
@@ -359,9 +408,18 @@ export async function runBridge(request, deps = {}) {
   const options = buildOptions(request);
 
   let finalResult = null;
+  let lastAssistantText = "";
+  let lastStructuredOutput = null;
   try {
     const stream = doQuery({ prompt, options });
     for await (const message of stream) {
+      const fallback = extractAssistantFallback(message);
+      if (fallback.content) {
+        lastAssistantText = fallback.content;
+      }
+      if (hasMeaningfulStructuredOutput(fallback.structured_output)) {
+        lastStructuredOutput = fallback.structured_output;
+      }
       if (message?.type === "result") {
         finalResult = message;
       }
@@ -376,9 +434,14 @@ export async function runBridge(request, deps = {}) {
     return buildErrorResponse("Claude bridge did not receive a result message");
   }
 
-  const structured = normalizeStructuredOutput(finalResult.structured_output);
-  const finishReason = structured.tool_calls.length > 0 ? "tool_calls" : "stop";
   const isError = finalResult.is_error === true;
+  let structured = normalizeStructuredOutput(finalResult.structured_output);
+  if (!hasMeaningfulStructuredOutput(structured) && hasMeaningfulStructuredOutput(lastStructuredOutput)) {
+    structured = lastStructuredOutput;
+  }
+  const resultText = typeof finalResult.result === "string" ? finalResult.result.trim() : "";
+  const content = structured.content || (isError ? "" : resultText || lastAssistantText);
+  const finishReason = structured.tool_calls.length > 0 ? "tool_calls" : "stop";
   const errorText = isError ? String(finalResult.result || (finalResult.errors || []).join("; ")) : "";
 
   return {
@@ -387,7 +450,7 @@ export async function runBridge(request, deps = {}) {
     is_error: isError,
     error: errorText,
     result: typeof finalResult.result === "string" ? finalResult.result : "",
-    content: structured.content || (isError ? "" : String(finalResult.result || "")),
+    content,
     tool_calls: structured.tool_calls,
     finish_reason: finishReason,
     session_id: finalResult.session_id ?? "",
