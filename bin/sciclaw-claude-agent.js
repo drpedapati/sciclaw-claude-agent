@@ -1,8 +1,26 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
 import process from "node:process";
 
 import { runBridge } from "../src/bridge.js";
+
+function resolveVersion() {
+  if (process.env.npm_package_version) {
+    return process.env.npm_package_version;
+  }
+  if (process.env.SCICLAW_CLAUDE_AGENT_VERSION) {
+    return process.env.SCICLAW_CLAUDE_AGENT_VERSION;
+  }
+  try {
+    const raw = readFileSync(new URL("../package.json", import.meta.url), "utf8");
+    const pkg = JSON.parse(raw);
+    if (typeof pkg.version === "string" && pkg.version.trim()) {
+      return pkg.version.trim();
+    }
+  } catch {}
+  return "0.1.0";
+}
 
 function printHelp() {
   process.stdout.write(`Usage: sciclaw-claude-agent < request.json
@@ -29,7 +47,7 @@ async function main() {
     return;
   }
   if (process.argv.includes("--version") || process.argv.includes("-v")) {
-    process.stdout.write(`${process.env.npm_package_version ?? "0.1.0"}\n`);
+    process.stdout.write(`${resolveVersion()}\n`);
     return;
   }
 
